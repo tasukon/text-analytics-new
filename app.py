@@ -7,6 +7,7 @@ from collections import Counter
 from wordcloud import WordCloud
 import re
 import time
+import networkx as nx
 
 # --- 1. アプリの基本設定 ---
 st.set_page_config(
@@ -15,7 +16,11 @@ st.set_page_config(
     layout="wide"
 )
 
-# ストップワードの定義（お好みで追加可能）
+# セッションステートの初期化（データを記憶させる金庫を作る）
+if 'df' not in st.session_state:
+    st.session_state.df = None
+
+# ストップワードの定義
 DEFAULT_STOPWORDS = [
     "の", "に", "は", "を", "た", "が", "で", "て", "と", "し", "れ", "さ",
     "ある", "いる", "も", "する", "から", "な", "こと", "として", "い", "や",
@@ -23,7 +28,7 @@ DEFAULT_STOPWORDS = [
     "ます", "です", "さん", "ちゃん", "くん"
 ]
 
-# --- 2. 関数の定義（キャッシュを使って高速化） ---
+# --- 2. 関数の定義 ---
 
 @st.cache_data
 def get_tokens(text, stop_words):
@@ -42,7 +47,7 @@ def get_tokens(text, stop_words):
 
 @st.cache_data
 def create_demo_data():
-    """デモ用のダミーデータを生成する関数"""
+    """デモ用のダミーデータを生成"""
     data = {
         '学年': ['1年', '1年', '2年', '2年', '3年', '3年', '1年', '2年', '3年', '1年'],
         '性別': ['男性', '女性', '男性', '女性', '男性', '女性', '女性', '男性', '女性', '男性'],
@@ -61,57 +66,55 @@ def create_demo_data():
     }
     return pd.DataFrame(data)
 
-def generate_wordcloud(text, font_path=None):
-    """ワードクラウドを生成する関数"""
-    # MacやLinux(Streamlit Cloud)環境での文字化け対策としてフォント指定が必要な場合があります
-    # 今回はjapanize_matplotlibのフォントパスを借用するか、デフォルトで試みます
-    wc = WordCloud(
-        background_color="white",
-        width=800,
-        height=500,
-        font_path="IPAexGothic.ttf", # ※同じフォルダにフォントファイルがある場合
-        regexp=r"[\w']+"
-    ).generate(text)
-    return wc
-
-# --- 3. サイドバー（設定・入力エリア） ---
+# --- 3. サイドバー（データ入力） ---
 st.sidebar.title("🛠 設定 & データ入力")
 
-input_method = st.sidebar.radio("データの読み込み方法", ["デモデータを使う", "スプレッドシートURLを入力"])
+# CSVアップロード機能を追加
+input_method = st.sidebar.radio("データの読み込み方法", ["デモデータを使う", "スプレッドシートURL", "CSVファイルをアップロード"])
 
-df = None
+# --- データ読み込み処理 ---
+# ボタンを押すと、session_state.df にデータが保存される仕組みに変更
 
 if input_method == "デモデータを使う":
     if st.sidebar.button("デモデータをロード"):
-        with st.spinner("デモデータを生成中..."):
-            time.sleep(1) # 処理感の演出
-            df = create_demo_data()
-            st.sidebar.success("デモデータを読み込みました！")
+        st.session_state.df = create_demo_data()
+        st.sidebar.success("デモデータを読み込みました！")
 
-else:
+elif input_method == "スプレッドシートURL":
     url = st.sidebar.text_input("スプレッドシートのURL")
     if st.sidebar.button("データを読み込む"):
         if url:
             try:
-                with st.spinner("スプレッドシートからデータを取得中..."):
+                with st.spinner("データ取得中..."):
                     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
                     if match:
                         file_id = match.group(1)
                         csv_url = f'https://docs.google.com/spreadsheets/d/{file_id}/export?format=csv'
-                        df = pd.read_csv(csv_url)
-                        st.sidebar.success(f"読み込み成功！ ({len(df)}行)")
+                        st.session_state.df = pd.read_csv(csv_url)
+                        st.sidebar.success(f"読み込み成功！ ({len(st.session_state.df)}行)")
                     else:
                         st.sidebar.error("URLの形式が正しくありません。")
             except Exception as e:
-                st.sidebar.error(f"エラーが発生しました: {e}")
-                st.sidebar.info("ヒント: シートの共有設定が「リンクを知っている全員」になっているか確認してください。")
+                st.sidebar.error(f"エラー: {e}")
 
-# --- 4. メイン画面の構築 ---
+elif input_method == "CSVファイルをアップロード":
+    uploaded_file = st.sidebar.file_uploader("CSVファイルをドラッグ&ドロップ", type=['csv'])
+    if uploaded_file is not None:
+        # アップロードされたらすぐに読み込む
+        try:
+            st.session_state.df = pd.read_csv(uploaded_file)
+            st.sidebar.success(f"読み込み成功！ ({len(st.session_state.df)}行)")
+        except Exception as e:
+            st.sidebar.error(f"エラー: {e}")
+
+# --- 4. メイン画面 ---
 st.title("📊 テキスト分析アプリ")
-st.markdown("アンケートなどの自由記述データを分析・可視化するツールです。")
 
-if df is not None:
-    # データが読み込まれている場合のみタブを表示
+# セッションステート（金庫）にデータがあるか確認
+if st.session_state.df is not None:
+    df = st.session_state.df  # 使いやすいように変数に入れる
+    
+    # タブ作成
     tab1, tab2, tab3 = st.tabs(["📂 データセット確認", "📈 頻出単語分析", "☁️ ワードクラウド"])
 
     with tab1:
@@ -120,28 +123,24 @@ if df is not None:
 
     with tab2:
         st.header("頻出単語ランキング")
+        # すべての列を候補にする（数値データも選べるように修正）
+        all_cols = df.columns
+        target_col = st.selectbox("分析する文章の列を選んでください", all_cols, index=len(all_cols)-1)
         
-        # 分析する列を選択
-        text_cols = df.select_dtypes(include=['object']).columns
-        target_col = st.selectbox("分析する列を選んでください", text_cols, index=len(text_cols)-1)
-        
-        # 表示件数のスライダー
         top_n = st.slider("表示する単語数", 5, 50, 10)
 
         if st.button("グラフを表示"):
-            with st.spinner("テキスト解析中..."):
-                # 全テキストを結合
+            with st.spinner("解析中..."):
+                # 選んだ列を強制的に文字型(str)に変換して結合
                 text_data = " ".join(df[target_col].dropna().astype(str).tolist())
                 tokens = get_tokens(text_data, DEFAULT_STOPWORDS)
                 
                 if tokens:
                     counter = Counter(tokens)
                     words, counts = zip(*counter.most_common(top_n))
-                    
-                    # グラフ描画
                     fig, ax = plt.subplots(figsize=(10, 6))
                     ax.barh(words, counts, color='skyblue')
-                    ax.invert_yaxis() # 上位を上に
+                    ax.invert_yaxis()
                     ax.set_title(f"「{target_col}」の頻出単語 TOP{top_n}")
                     st.pyplot(fig)
                 else:
@@ -149,7 +148,7 @@ if df is not None:
 
     with tab3:
         st.header("ワードクラウド")
-        target_col_wc = st.selectbox("ワードクラウドにする列", text_cols, key='wc_select')
+        target_col_wc = st.selectbox("ワードクラウドにする列", all_cols, key='wc_select')
         
         if st.button("ワードクラウド作成"):
             with st.spinner("描画中..."):
@@ -158,14 +157,11 @@ if df is not None:
                 text_space_sep = " ".join(tokens)
                 
                 try:
-                    # フォントパスの問題を回避するための簡易try-except
-                    # Streamlit Cloud等で日本語フォントがないと文字化けするため、
-                    # 実際にはリポジトリに IPAexGothic.ttf などを置いて指定するのが確実です
                     wc = WordCloud(
                         background_color="white",
                         width=800, height=500,
                         regexp=r"[\w']+",
-                        font_path="IPAexGothic.ttf" # フォントファイルがある前提
+                        font_path="IPAexGothic.ttf"
                     ).generate(text_space_sep)
                     
                     fig_wc, ax_wc = plt.subplots(figsize=(12, 8))
@@ -173,9 +169,8 @@ if df is not None:
                     ax_wc.axis("off")
                     st.pyplot(fig_wc)
                 except Exception as e:
-                    st.error("ワードクラウド生成エラー（フォントファイルが見つからない可能性があります）")
+                    st.error("エラーが発生しました。フォントファイルがあるか確認してください。")
                     st.write(e)
 
 else:
-    # データ未読み込み時の案内
-    st.info("👈 左のサイドバーから「デモデータ」を選択して試すか、スプレッドシートのURLを入力してください。")
+    st.info("👈 左のサイドバーからデータを読み込んでください")
