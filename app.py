@@ -11,7 +11,7 @@ import re
 import time
 
 # --- 1. アプリの設定 ---
-st.set_page_config(page_title="Text Analytics V5", layout="wide")
+st.set_page_config(page_title="Text Analytics V6", layout="wide")
 
 # セッションステート初期化
 if 'df' not in st.session_state:
@@ -29,24 +29,22 @@ DEFAULT_STOPWORDS = [
     "ます", "です", "さん", "ちゃん", "くん", "あっ", "あり", "いっ", "う",
     "か", "せる", "たい", "だけ", "たち", "ついて", "でき", "なり", "の",
     "ばかり", "ほど", "まで", "まま", "よう", "より", "わたし", "それ", "これ",
-    "回答", "なし", "特になし", "特に", "ため"
+    "回答", "なし", "特になし", "特に", "ため", "てき", "それら"
 ]
 
 # --- 2. 関数定義 ---
 
 def classify_columns(df):
-    """列の中身を見て、属性(フィルタ用)かテキスト(分析用)かを自動判定する"""
-    filter_cols = [] # 学年、性別など
-    text_cols = []   # 自由記述など
+    """属性(フィルタ用)とテキスト(分析用)を自動判定"""
+    filter_cols = [] 
+    text_cols = []   
 
     for col in df.columns:
-        # 数値型でも、種類が少なければカテゴリー（学年など）とみなす
         unique_count = df[col].nunique()
-        
-        # 判定基準: ユニークな値が50種類未満なら「属性（フィルタ用）」とみなす
+        # 50種類未満なら「属性」とみなす
         if unique_count < 50:
             filter_cols.append(col)
-        # それ以外で、文字型なら「テキスト（分析用）」とみなす
+        # それ以外で文字型なら「テキスト」とみなす
         elif df[col].dtype == 'object':
             text_cols.append(col)
             
@@ -110,31 +108,45 @@ if st.session_state.step == 1:
         except Exception as e:
             st.error(f"エラー: {e}")
 
-# === STEP 2: 除外ワード設定 (全データ対象) ===
+# === STEP 2: 除外ワード設定 (全テキスト一括) ===
 elif st.session_state.step == 2:
-    st.title("🧹 Step 2: データクリーニング")
-    st.markdown("ここではデータの絞り込みは行わず、**データ全体**に含まれる不要な単語（除外ワード）を設定します。")
+    
+    # --- レイアウト: タイトルと「次へ」ボタンを横並びに ---
+    header_col1, header_col2 = st.columns([3, 1])
+    with header_col1:
+        st.title("🧹 Step 2: データクリーニング")
+        st.markdown("ファイル内の**すべての文章**から、頻出単語を集計しました。不要な言葉を除外してください。")
     
     df = st.session_state.df
-    
-    # 列の自動判定
     filter_candidates, text_candidates = classify_columns(df)
     
-    # 分析する列を選ばせる（テキスト候補からデフォルト選択）
-    if text_candidates:
-        target_col = st.selectbox("分析する文章の列を選んでください", text_candidates, index=len(text_candidates)-1)
-    else:
-        target_col = st.selectbox("分析する文章の列を選んでください", df.columns) # 候補がない場合は全列から
+    # 完了ボタン（上部に配置）
+    with header_col2:
+        st.write("") # 余白調整
+        if st.button("設定完了！分析画面へ (Step 3) >>", type="primary", use_container_width=True):
+            st.session_state.text_candidates = text_candidates # 自動判定したテキスト列
+            st.session_state.filter_candidates = filter_candidates # 自動判定した属性列
+            st.session_state.step = 3
+            st.rerun()
+
+    st.markdown("---")
 
     col1, col2 = st.columns([1, 1])
     
     with col1:
-        st.subheader("現在の頻出単語 (TOP30)")
+        st.subheader("全体ランキング (TOP30)")
         
-        # 現在の設定で集計
+        # 全テキスト列を結合して分析
         current_stop = DEFAULT_STOPWORDS + st.session_state.user_stopwords
-        text_data = " ".join(df[target_col].dropna().astype(str).tolist())
-        tokens = get_tokens(text_data, current_stop)
+        
+        full_text_data = ""
+        # 自動判定された「テキスト列」の中身を全部つなげる
+        target_cols = text_candidates if text_candidates else df.columns
+        
+        for col in target_cols:
+            full_text_data += " " + " ".join(df[col].dropna().astype(str).tolist())
+        
+        tokens = get_tokens(full_text_data, current_stop)
         
         if tokens:
             c = Counter(tokens)
@@ -144,16 +156,16 @@ elif st.session_state.step == 2:
             fig, ax = plt.subplots(figsize=(6, 8))
             ax.barh(words, counts, color='gray')
             ax.invert_yaxis()
-            ax.set_title("全体ランキング")
+            ax.set_title("すべての文章の合計")
             st.pyplot(fig)
         else:
-            st.warning("単語が見つかりません。")
+            st.warning("テキストデータが見つかりません。")
 
     with col2:
         st.subheader("除外ワードの追加")
         st.info("左のグラフを見て、分析に不要な単語を入力してください。")
         
-        new_word = st.text_input("除外したい単語 (入力してEnter)", placeholder="例: 私 思う")
+        new_word = st.text_input("除外したい単語 (入力してEnter)", placeholder="例: 私 思う アンケート")
         if new_word:
             words = new_word.split()
             added = []
@@ -173,26 +185,17 @@ elif st.session_state.step == 2:
             st.session_state.user_stopwords = []
             st.rerun()
 
-    st.markdown("---")
-    # 次へ進むときに、選んだ列情報を保存
-    if st.button("設定完了！分析画面へ進む (Step 3) >>", type="primary"):
-        st.session_state.target_col = target_col
-        st.session_state.filter_candidates = filter_candidates # 自動判定した属性列を渡す
-        st.session_state.step = 3
-        st.rerun()
-
 # === STEP 3: 最終分析 (多重フィルタリング & 可視化) ===
 elif st.session_state.step == 3:
     st.title("📊 Step 3: 詳細分析")
     
     df = st.session_state.df
-    target_col = st.session_state.target_col
+    text_candidates = st.session_state.text_candidates
     filter_candidates = st.session_state.filter_candidates
     stop_words = DEFAULT_STOPWORDS + st.session_state.user_stopwords
 
     # --- サイドバー: フィルタリング設定 ---
     st.sidebar.header("🔍 データの絞り込み")
-    st.sidebar.caption("条件を指定すると、グラフが自動で更新されます。")
     
     # フィルタリング処理
     df_filtered = df.copy()
@@ -205,12 +208,11 @@ elif st.session_state.step == 3:
         
         if selected:
             df_filtered = df_filtered[df_filtered[col].isin(selected)]
-            active_filters.append(f"{col}:{selected}")
-    
-    # フィルタ結果の表示
+            
     st.sidebar.markdown("---")
     st.sidebar.write(f"**分析対象:** {len(df_filtered)} 行 / {len(df)} 行")
     
+    # 戻るボタン
     if st.sidebar.button("Step 2 (除外設定) に戻る"):
         st.session_state.step = 2
         st.rerun()
@@ -221,12 +223,15 @@ elif st.session_state.step == 3:
 
     # --- メインエリア: 可視化 ---
     
-    # データがあるか確認
     if len(df_filtered) == 0:
         st.error("条件に合うデータが0件です。フィルタ条件を緩めてください。")
     else:
-        # トークン化
-        full_text = " ".join(df_filtered[target_col].dropna().astype(str).tolist())
+        # Step 3では、対象となる全テキスト列を結合して表示
+        full_text = ""
+        target_cols = text_candidates if text_candidates else df.columns
+        for col in target_cols:
+            full_text += " " + " ".join(df_filtered[col].dropna().astype(str).tolist())
+            
         tokens = get_tokens(full_text, stop_words)
 
         if not tokens:
@@ -256,8 +261,12 @@ elif st.session_state.step == 3:
                 with col2:
                     min_edge = st.slider("最小共起回数", 1, 10, 2, key='net2')
                 
-                # 行ごとのリスト作成
-                sentences = df_filtered[target_col].dropna().astype(str).tolist()
+                # 行ごとのリスト作成（全テキスト列を結合）
+                sentences = []
+                for i, row in df_filtered.iterrows():
+                    row_text = " ".join([str(row[c]) for c in target_cols if pd.notna(row[c])])
+                    sentences.append(row_text)
+
                 tokens_list = [get_tokens(s, stop_words) for s in sentences]
                 G = create_network(tokens_list, net_top, min_edge)
                 
@@ -270,7 +279,7 @@ elif st.session_state.step == 3:
                     ax.axis('off')
                     st.pyplot(fig)
                 else:
-                    st.warning("つながりが見つかりませんでした。設定を緩めてください。")
+                    st.warning("つながりが見つかりませんでした。")
 
             with tab3:
                 st.subheader("頻出単語ランキング")
@@ -279,5 +288,3 @@ elif st.session_state.step == 3:
                 words, counts = zip(*common)
                 fig, ax = plt.subplots(figsize=(8, 6))
                 ax.barh(words, counts, color='skyblue')
-                ax.invert_yaxis()
-                st.pyplot(fig)
