@@ -5,3 +5,4 @@ japanize-matplotlib
 janome
 wordcloud
 networkx
+openpyxl
