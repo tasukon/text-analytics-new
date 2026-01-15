@@ -8,9 +8,10 @@ from wordcloud import WordCloud
 import networkx as nx
 import itertools
 import re
+import time
 
 # --- 1. アプリの設定 ---
-st.set_page_config(page_title="Text Analytics V9", layout="wide")
+st.set_page_config(page_title="Text Analytics V10", layout="wide")
 
 # セッションステート初期化
 if 'df' not in st.session_state:
@@ -51,14 +52,12 @@ def get_tokens(text, stop_words):
     if not isinstance(text, str):
         return []
     
-    # 除外ワードをセット（検索高速化）
     stop_set = set(stop_words)
     japanese_pattern = re.compile(r'[ぁ-んァ-ン一-龥]')
     
     for token in t.tokenize(text):
         base = token.base_form
         pos = token.part_of_speech.split(',')[0]
-        # 除外判定
         if (pos in ['名詞', '動詞', '形容詞'] and 
             len(base) > 1 and 
             base not in stop_set and 
@@ -79,50 +78,6 @@ def create_network(tokens_list, top_n, min_edge):
     for (u, v), weight in top_pairs:
         if weight >= min_edge:
             G.add_edge(u, v, weight=weight)
-    return G
-
-def create_colored_network(tokens_a, tokens_b, top_n, min_edge):
-    """比較用ネットワーク (色分け機能付き)"""
-    # 両方の単語カウント
-    count_a = Counter(tokens_a)
-    count_b = Counter(tokens_b)
-    
-    # 結合してネットワークを作る
-    all_tokens_list = [tokens_a, tokens_b] # 簡易的に2文書として扱うとエッジが弱くなるため工夫が必要
-    # 実際には文書ごとのリストが必要だが、ここでは簡易化のため「頻出語リスト」からグラフを作る
-    
-    # 上位語を抽出
-    common_words = set([w for w, c in count_a.most_common(top_n)] + [w for w, c in count_b.most_common(top_n)])
-    
-    # エッジの生成（共起）は「元の文脈」が必要だが、
-    # ここでは計算負荷を下げるため、簡易的にノードの色分けに注力する
-    # ノードだけ定義して、色は「どちらに多く出ているか」で決める
-    
-    G = nx.Graph()
-    
-    # ノードの追加と色決定
-    node_colors = []
-    for word in common_words:
-        freq_a = count_a.get(word, 0)
-        freq_b = count_b.get(word, 0)
-        total = freq_a + freq_b
-        
-        if total == 0: continue
-        
-        G.add_node(word, size=total)
-        
-        # 色分けロジック
-        ratio = freq_a / total
-        if ratio > 0.7:
-            color = "#66b3ff" # 青 (A寄り)
-        elif ratio < 0.3:
-            color = "#ff9999" # 赤 (B寄り)
-        else:
-            color = "#dddddd" # グレー (共通)
-        
-        # 属性として保存 (描画時にリスト化するため)
-        G.nodes[word]['color'] = color
-        
     return G
 
 # --- 3. メイン処理 ---
@@ -158,19 +113,12 @@ else:
         new_words_input = st.text_input("追加", placeholder="例: 私　思う　アンケート")
         
         if new_words_input:
-            # 全角スペースを半角に変換して分割
             words = new_words_input.replace('　', ' ').split()
-            added_count = 0
             for w in words:
                 if w not in st.session_state.user_stopwords:
                     st.session_state.user_stopwords.append(w)
-                    added_count += 1
-            if added_count > 0:
-                st.success(f"{added_count}語を追加しました")
-                time.sleep(1) # 追加したことがわかるように少し待つ
-                st.rerun()
+            st.rerun()
         
-        # 除外リストの表示（削除機能付きは複雑になるので、リセットのみ実装）
         st.write(f"**現在の除外リスト ({len(st.session_state.user_stopwords)}語):**")
         st.text(", ".join(st.session_state.user_stopwords))
         
@@ -180,9 +128,10 @@ else:
             
     stop_words = DEFAULT_STOPWORDS + st.session_state.user_stopwords
 
-    # 2. フィルタリング設定
+    # 2. 全体フィルタリング設定 (ベースとなる絞り込み)
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔍 全体の絞り込み")
+    st.sidebar.caption("※ここで絞り込んだデータの中から、さらにグループA/Bを選びます")
     
     df_filtered = df.copy()
     for col in filter_candidates:
@@ -200,10 +149,8 @@ else:
 
     # --- メインエリア ---
     
-    # モード切替
-    mode = st.radio("表示モード", ["全体分析", "⚔️ グループ比較"], horizontal=True)
+    mode = st.radio("表示モード", ["全体分析", "⚔️ 自由比較 (カスタム)"], horizontal=True)
 
-    # ターゲット列（テキスト）の結合
     target_cols = text_candidates if text_candidates else df.columns
     
     if len(df_filtered) == 0:
@@ -217,7 +164,7 @@ else:
         tokens = get_tokens(full_text, stop_words)
 
         if not tokens:
-            st.warning("表示できる単語がありません。除外ワードを減らすか、データを増やしてください。")
+            st.warning("表示できる単語がありません。")
         else:
             tab1, tab2, tab3 = st.tabs(["☁️ ワードクラウド", "🕸️ つながりマップ", "📈 ランキング"])
             
@@ -235,7 +182,7 @@ else:
                     st.error("フォント読込エラー")
 
             with tab2:
-                st.info("💡 **ヒント**: 頻繁にセットで登場する単語同士が線で結ばれています。")
+                st.info("💡 **ヒント**: 同じ文脈でよく使われる単語同士が線で結ばれています。")
                 c1, c2 = st.columns(2)
                 net_top = c1.slider("表示単語数", 10, 150, 60)
                 min_edge = c2.slider("最小の線の太さ", 1, 10, 2)
@@ -267,34 +214,48 @@ else:
                 ax.invert_yaxis()
                 st.pyplot(fig)
 
-    # === B. グループ比較モード (V9強化版) ===
-    elif mode == "⚔️ グループ比較":
-        st.markdown("#### 2つのグループの違いを一画面で比較")
+    # === B. 自由比較モード (V10: マルチ条件対応) ===
+    elif mode == "⚔️ 自由比較 (カスタム)":
+        st.markdown("#### 条件を組み合わせてグループを作成")
+        st.caption("例：グループAに「1年」「男子」を設定し、グループBに「3年」「女子」を設定するなど")
         
         if not filter_candidates:
             st.error("比較できる属性列が見つかりません。")
         else:
-            col_comp_1, col_comp_2, col_comp_3 = st.columns([1, 1, 1])
-            target_attr = col_comp_1.selectbox("比較する項目", filter_candidates)
+            # 2カラムで条件設定エリアを作る
+            col_a_setup, col_b_setup = st.columns(2)
             
-            unique_vals = sorted(df_filtered[target_attr].dropna().unique().tolist())
-            
-            # 複数選択 (Multiselect) に変更
-            vals_a = col_comp_2.multiselect("グループA (青)", unique_vals, default=[unique_vals[0]] if unique_vals else None)
-            
-            # デフォルトでA以外を選択状態にする工夫
-            default_b = [v for v in unique_vals if v not in vals_a]
-            if not default_b and unique_vals: default_b = [unique_vals[-1]]
-            
-            vals_b = col_comp_3.multiselect("グループB (赤)", unique_vals, default=default_b)
+            # --- グループAの作成 ---
+            with col_a_setup:
+                st.info("🟦 **グループA の条件**")
+                df_a = df_filtered.copy()
+                with st.expander("条件を選択 (開く)", expanded=True):
+                    for col in filter_candidates:
+                        # 選択肢の取得
+                        vals = sorted(df[col].dropna().unique().tolist())
+                        # ユニークキーのために key引数をつける
+                        selected_a = st.multiselect(f"{col} (A)", vals, key=f"sel_a_{col}")
+                        if selected_a:
+                            df_a = df_a[df_a[col].isin(selected_a)]
+                st.write(f"**人数:** {len(df_a)} 人")
 
-            if not vals_a or not vals_b:
-                st.warning("比較するグループを選択してください。")
+            # --- グループBの作成 ---
+            with col_b_setup:
+                st.error("🟥 **グループB の条件**")
+                df_b = df_filtered.copy()
+                # デフォルトでAと違う条件にするのは難しいので、最初は「全員」にしてユーザーに選ばせる
+                with st.expander("条件を選択 (開く)", expanded=True):
+                    for col in filter_candidates:
+                        vals = sorted(df[col].dropna().unique().tolist())
+                        selected_b = st.multiselect(f"{col} (B)", vals, key=f"sel_b_{col}")
+                        if selected_b:
+                            df_b = df_b[df_b[col].isin(selected_b)]
+                st.write(f"**人数:** {len(df_b)} 人")
+
+            if len(df_a) == 0 or len(df_b) == 0:
+                st.warning("条件に該当するデータが0件です。条件を緩めてください。")
             else:
-                # データ分割 & トークン化
-                df_a = df_filtered[df_filtered[target_attr].isin(vals_a)]
-                df_b = df_filtered[df_filtered[target_attr].isin(vals_b)]
-                
+                # 分析実行
                 def get_combined_tokens(d):
                     txt = ""
                     for c in target_cols:
@@ -304,15 +265,12 @@ else:
                 tokens_a = get_combined_tokens(df_a)
                 tokens_b = get_combined_tokens(df_b)
 
-                st.markdown(f"**分析対象数:** 🟦 グループA: {len(df_a)}件 vs 🟥 グループB: {len(df_b)}件")
-
-                # タブでグラフを切り替え
+                # タブ表示
                 comp_tab1, comp_tab2, comp_tab3 = st.tabs(["☁️ ワードクラウド", "🕸️ 違いのネットワーク", "🦋 対比ランキング"])
 
                 with comp_tab1:
                     c1, c2 = st.columns(2)
                     with c1:
-                        st.info("🟦 グループA の特徴")
                         if tokens_a:
                             wc_a = WordCloud(background_color="white", width=400, height=300, font_path="IPAexGothic.ttf").generate(" ".join(tokens_a))
                             fig, ax = plt.subplots()
@@ -320,7 +278,6 @@ else:
                             ax.axis("off")
                             st.pyplot(fig)
                     with c2:
-                        st.error("🟥 グループB の特徴")
                         if tokens_b:
                             wc_b = WordCloud(background_color="white", width=400, height=300, font_path="IPAexGothic.ttf").generate(" ".join(tokens_b))
                             fig, ax = plt.subplots()
@@ -329,25 +286,18 @@ else:
                             st.pyplot(fig)
 
                 with comp_tab2:
-                    st.markdown("##### 🟦 青はAによく出る言葉、🟥 赤はBによく出る言葉")
-                    # 簡易的に結合したネットワークを描画し、ノードの色を変える
+                    st.markdown("##### 🟦 青はAの特徴、🟥 赤はBの特徴、⬜ グレーは共通の話題")
                     
-                    # 共起計算用に一旦sentencesを作る
                     sentences_mixed = []
-                    # Aの文
                     for i, row in df_a.iterrows():
                         sentences_mixed.append(" ".join([str(row[c]) for c in target_cols if pd.notna(row[c])]))
-                    # Bの文
                     for i, row in df_b.iterrows():
                         sentences_mixed.append(" ".join([str(row[c]) for c in target_cols if pd.notna(row[c])]))
                     
                     tokens_list_mixed = [get_tokens(s, stop_words) for s in sentences_mixed]
-                    
-                    # ネットワーク生成
                     G = create_network(tokens_list_mixed, top_n=60, min_edge=2)
                     
                     if G.number_of_nodes() > 0:
-                        # 色分け計算
                         count_a = Counter(tokens_a)
                         count_b = Counter(tokens_b)
                         
@@ -355,15 +305,12 @@ else:
                         for node in G.nodes():
                             fa = count_a.get(node, 0)
                             fb = count_b.get(node, 0)
-                            total = fa + fb + 0.1 # ゼロ除算防止
+                            total = fa + fb + 0.1 
                             ratio = fa / total
                             
-                            if ratio > 0.6:
-                                node_colors.append('#66b3ff') # A寄り(青)
-                            elif ratio < 0.4:
-                                node_colors.append('#ff9999') # B寄り(赤)
-                            else:
-                                node_colors.append('#dddddd') # 共通(グレー)
+                            if ratio > 0.6: node_colors.append('#66b3ff')
+                            elif ratio < 0.4: node_colors.append('#ff9999')
+                            else: node_colors.append('#dddddd')
                         
                         fig, ax = plt.subplots(figsize=(9, 9))
                         pos = nx.spring_layout(G, k=0.7, seed=42)
@@ -373,39 +320,26 @@ else:
                         ax.axis('off')
                         st.pyplot(fig)
                     else:
-                        st.warning("共通するつながりが少なすぎて描画できません。")
+                        st.warning("共通データ不足で描画できません")
 
                 with comp_tab3:
-                    st.markdown("##### 🦋 バタフライチャート (左右の頻度比較)")
-                    # 両方のトップ20単語を取得してマージ
+                    st.markdown("##### 🦋 バタフライチャート")
                     ca = Counter(tokens_a)
                     cb = Counter(tokens_b)
-                    
-                    # AとBあわせた上位単語
                     all_top_words = list(set([w for w, c in ca.most_common(15)] + [w for w, c in cb.most_common(15)]))
                     
                     data = []
                     for w in all_top_words:
                         data.append({'word': w, 'A': ca.get(w, 0), 'B': cb.get(w, 0)})
                     
-                    df_comp = pd.DataFrame(data).sort_values('A', ascending=True) # Aの順でソート
+                    df_comp = pd.DataFrame(data).sort_values('A', ascending=True)
                     
                     if not df_comp.empty:
                         fig, ax = plt.subplots(figsize=(10, 8))
-                        
-                        # Aは左（マイナス方向）に伸ばす
-                        ax.barh(df_comp['word'], -df_comp['A'], color='#66b3ff', label=f"グループA ({len(df_a)})")
-                        # Bは右（プラス方向）に伸ばす
-                        ax.barh(df_comp['word'], df_comp['B'], color='#ff9999', label=f"グループB ({len(df_b)})")
-                        
-                        # 真ん中の線
+                        ax.barh(df_comp['word'], -df_comp['A'], color='#66b3ff', label="グループA")
+                        ax.barh(df_comp['word'], df_comp['B'], color='#ff9999', label="グループB")
                         ax.axvline(0, color='black', linewidth=0.8)
-                        
-                        # ラベル（マイナスをプラス表記に戻す）
                         xticks = ax.get_xticks()
                         ax.set_xticklabels([str(abs(int(x))) for x in xticks])
-                        
                         ax.legend()
                         st.pyplot(fig)
-                    else:
-                        st.write("データ不足")
