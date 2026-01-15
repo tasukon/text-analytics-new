@@ -11,7 +11,7 @@ import re
 import time
 
 # --- 1. アプリの設定 ---
-st.set_page_config(page_title="Text Analytics V11", layout="wide")
+st.set_page_config(page_title="Text Analytics V12", layout="wide")
 
 # セッションステート初期化
 if 'df' not in st.session_state:
@@ -80,23 +80,31 @@ def create_network(tokens_list, top_n, min_edge):
             G.add_edge(u, v, weight=weight)
     return G
 
-def display_kwic(df_target, target_cols, search_word):
-    """原文検索結果を表示するヘルパー関数"""
+def display_kwic(df_target, target_cols, search_word, filter_cols):
+    """原文検索結果を表示 (属性タグ付き)"""
     count = 0
-    # 検索語を太字にするための置換 (ケースインセンシティブにはしていません)
     highlight_word = f"**{search_word}**"
     
     for i, row in df_target.iterrows():
-        # 複数のテキスト列を連結してチェック
         row_text = " ".join([str(row[c]) for c in target_cols if pd.notna(row[c])])
         
         if search_word in row_text:
             count += 1
-            # 該当箇所をハイライト
             highlighted_text = row_text.replace(search_word, highlight_word)
-            st.markdown(f"・ {highlighted_text}")
             
-            if count >= 20: # 表示制限
+            # 属性タグの作成 (例: [1年] [男子])
+            tags = []
+            for f_col in filter_cols:
+                val = row[f_col]
+                if pd.notna(val):
+                    tags.append(f"[{val}]")
+            tag_str = " ".join(tags)
+            
+            # 表示
+            st.markdown(f"🏷️ **{tag_str}** : {highlighted_text}")
+            st.markdown("---") # 区切り線で見やすく
+            
+            if count >= 20:
                 st.caption(f"※これ以上は省略します（他 {len(df_target)-count} 件の可能性あり）")
                 break
     
@@ -188,7 +196,6 @@ else:
         if not tokens:
             st.warning("表示できる単語がありません。")
         else:
-            # タブ追加：原文検索
             tab1, tab2, tab3, tab4 = st.tabs(["☁️ ワードクラウド", "🕸️ つながりマップ", "📈 ランキング", "🔎 原文検索"])
             
             with tab1:
@@ -238,14 +245,15 @@ else:
                 st.pyplot(fig)
 
             with tab4:
-                st.markdown("#### 💬 実際の文章を確認する")
-                st.caption("分析結果で気になった単語を入力すると、その単語が含まれる文章を抜き出して表示します。")
+                st.markdown("#### 💬 実際の文章を確認する (属性付き)")
+                st.caption("検索したい単語を入力してください。誰が言ったかも合わせて表示されます。")
                 search_word = st.text_input("検索したい単語", placeholder="例: 先生")
                 
                 if search_word:
                     st.markdown(f"**「{search_word}」を含む回答一覧:**")
                     st.markdown("---")
-                    display_kwic(df_filtered, target_cols, search_word)
+                    # filter_candidates を渡すように変更
+                    display_kwic(df_filtered, target_cols, search_word, filter_candidates)
 
     # === B. 自由比較モード ===
     elif mode == "⚔️ 自由比較 (カスタム)":
@@ -290,7 +298,6 @@ else:
                 tokens_a = get_combined_tokens(df_a)
                 tokens_b = get_combined_tokens(df_b)
 
-                # タブ追加：原文検索
                 comp_tab1, comp_tab2, comp_tab3, comp_tab4 = st.tabs(["☁️ ワードクラウド", "🕸️ 違いのネットワーク", "🦋 対比ランキング", "🔎 原文検索"])
 
                 with comp_tab1:
@@ -364,14 +371,16 @@ else:
                         st.pyplot(fig)
 
                 with comp_tab4:
-                    st.markdown("#### 💬 文脈の違いを確認する")
+                    st.markdown("#### 💬 文脈の違いを確認する (属性付き)")
                     search_word = st.text_input("検索したい単語 (比較用)", placeholder="例: 授業")
                     
                     if search_word:
                         col_res_a, col_res_b = st.columns(2)
                         with col_res_a:
                             st.info(f"🟦 グループAの「{search_word}」")
-                            display_kwic(df_a, target_cols, search_word)
+                            # filter_candidates を渡すように変更
+                            display_kwic(df_a, target_cols, search_word, filter_candidates)
                         with col_res_b:
                             st.error(f"🟥 グループBの「{search_word}」")
-                            display_kwic(df_b, target_cols, search_word)
+                            # filter_candidates を渡すように変更
+                            display_kwic(df_b, target_cols, search_word, filter_candidates)
