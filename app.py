@@ -11,15 +11,13 @@ import re
 import time
 
 # --- 1. アプリの設定 ---
-st.set_page_config(page_title="Text Analytics V6", layout="wide")
+st.set_page_config(page_title="Text Analytics V8", layout="wide")
 
 # セッションステート初期化
 if 'df' not in st.session_state:
     st.session_state.df = None
 if 'user_stopwords' not in st.session_state:
     st.session_state.user_stopwords = []
-if 'step' not in st.session_state:
-    st.session_state.step = 1
 
 # 基本のストップワード
 DEFAULT_STOPWORDS = [
@@ -38,16 +36,12 @@ def classify_columns(df):
     """属性(フィルタ用)とテキスト(分析用)を自動判定"""
     filter_cols = [] 
     text_cols = []   
-
     for col in df.columns:
         unique_count = df[col].nunique()
-        # 50種類未満なら「属性」とみなす
         if unique_count < 50:
             filter_cols.append(col)
-        # それ以外で文字型なら「テキスト」とみなす
         elif df[col].dtype == 'object':
             text_cols.append(col)
-            
     return filter_cols, text_cols
 
 @st.cache_data
@@ -89,11 +83,10 @@ def create_network(tokens_list, top_n, min_edge):
 
 # --- 3. メイン処理 ---
 
-# === STEP 1: データ読み込み ===
-if st.session_state.step == 1:
-    st.title("📂 Step 1: データの読み込み")
-    st.info("分析したい CSV または Excel ファイルをアップロードしてください。")
-    
+# === ファイル読み込みエリア ===
+if st.session_state.df is None:
+    st.title("📂 データの読み込み")
+    st.markdown("分析したい **CSV** または **Excel** ファイルをアップロードしてください。")
     uploaded_file = st.file_uploader("ファイルをドラッグ＆ドロップ", type=['csv', 'xlsx'])
     
     if uploaded_file:
@@ -103,147 +96,81 @@ if st.session_state.step == 1:
             else:
                 df = pd.read_excel(uploaded_file)
             st.session_state.df = df
-            st.session_state.step = 2
             st.rerun()
         except Exception as e:
             st.error(f"エラー: {e}")
 
-# === STEP 2: 除外ワード設定 (全テキスト一括) ===
-elif st.session_state.step == 2:
-    
-    # --- レイアウト: タイトルと「次へ」ボタンを横並びに ---
-    header_col1, header_col2 = st.columns([3, 1])
-    with header_col1:
-        st.title("🧹 Step 2: データクリーニング")
-        st.markdown("ファイル内の**すべての文章**から、頻出単語を集計しました。不要な言葉を除外してください。")
-    
+# === 分析ダッシュボード ===
+else:
     df = st.session_state.df
     filter_candidates, text_candidates = classify_columns(df)
     
-    # 完了ボタン（上部に配置）
-    with header_col2:
-        st.write("") # 余白調整
-        if st.button("設定完了！分析画面へ (Step 3) >>", type="primary", use_container_width=True):
-            st.session_state.text_candidates = text_candidates # 自動判定したテキスト列
-            st.session_state.filter_candidates = filter_candidates # 自動判定した属性列
-            st.session_state.step = 3
-            st.rerun()
-
-    st.markdown("---")
-
-    col1, col2 = st.columns([1, 1])
+    # --- サイドバー: 設定エリア (除外設定＆フィルタ) ---
+    st.sidebar.title("⚙️ 設定パネル")
     
-    with col1:
-        st.subheader("全体ランキング (TOP30)")
-        
-        # 全テキスト列を結合して分析
-        current_stop = DEFAULT_STOPWORDS + st.session_state.user_stopwords
-        
-        full_text_data = ""
-        # 自動判定された「テキスト列」の中身を全部つなげる
-        target_cols = text_candidates if text_candidates else df.columns
-        
-        for col in target_cols:
-            full_text_data += " " + " ".join(df[col].dropna().astype(str).tolist())
-        
-        tokens = get_tokens(full_text_data, current_stop)
-        
-        if tokens:
-            c = Counter(tokens)
-            words, counts = zip(*c.most_common(30))
-            
-            # グラフ描画
-            fig, ax = plt.subplots(figsize=(6, 8))
-            ax.barh(words, counts, color='gray')
-            ax.invert_yaxis()
-            ax.set_title("すべての文章の合計")
-            st.pyplot(fig)
-        else:
-            st.warning("テキストデータが見つかりません。")
-
-    with col2:
-        st.subheader("除外ワードの追加")
-        st.info("左のグラフを見て、分析に不要な単語を入力してください。")
-        
-        new_word = st.text_input("除外したい単語 (入力してEnter)", placeholder="例: 私 思う アンケート")
+    # 1. 除外ワード設定 (Step 2の機能をここに統合)
+    with st.sidebar.expander("🚫 除外ワードの設定", expanded=True):
+        st.write(f"現在: {len(st.session_state.user_stopwords)} 語を除外中")
+        new_word = st.text_input("除外したい単語を入力", placeholder="入力してEnter")
         if new_word:
             words = new_word.split()
-            added = []
             for w in words:
                 if w not in st.session_state.user_stopwords:
                     st.session_state.user_stopwords.append(w)
-                    added.append(w)
-            if added:
-                st.success(f"除外しました: {added}")
-                time.sleep(0.5)
-                st.rerun()
+            st.rerun()
         
-        st.write("🚫 **現在の除外リスト:**")
-        st.write(st.session_state.user_stopwords)
-        
-        if st.button("リセット"):
+        if st.button("除外リストをリセット"):
             st.session_state.user_stopwords = []
             st.rerun()
-
-# === STEP 3: 最終分析 (多重フィルタリング & 可視化) ===
-elif st.session_state.step == 3:
-    st.title("📊 Step 3: 詳細分析")
-    
-    df = st.session_state.df
-    text_candidates = st.session_state.text_candidates
-    filter_candidates = st.session_state.filter_candidates
+            
     stop_words = DEFAULT_STOPWORDS + st.session_state.user_stopwords
 
-    # --- サイドバー: フィルタリング設定 ---
-    st.sidebar.header("🔍 データの絞り込み")
+    # 2. フィルタリング設定
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🔍 データの絞り込み")
     
-    # フィルタリング処理
     df_filtered = df.copy()
-    
-    # 自動判定された属性列ごとに、選択ボックスを作る
-    active_filters = []
     for col in filter_candidates:
         unique_vals = sorted(df[col].dropna().unique().tolist())
         selected = st.sidebar.multiselect(f"{col}", unique_vals)
-        
         if selected:
             df_filtered = df_filtered[df_filtered[col].isin(selected)]
             
-    st.sidebar.markdown("---")
-    st.sidebar.write(f"**分析対象:** {len(df_filtered)} 行 / {len(df)} 行")
+    st.sidebar.write(f"対象: {len(df_filtered)} / {len(df)} 件")
     
-    # 戻るボタン
-    if st.sidebar.button("Step 2 (除外設定) に戻る"):
-        st.session_state.step = 2
-        st.rerun()
-    if st.sidebar.button("Step 1 (ファイル選択) に戻る"):
+    if st.sidebar.button("別のファイルを読み込む"):
         st.session_state.df = None
-        st.session_state.step = 1
+        st.session_state.user_stopwords = []
         st.rerun()
 
-    # --- メインエリア: 可視化 ---
+    # --- メインエリア: 分析結果 ---
+    
+    # モード切替スイッチ
+    mode = st.radio("表示モード", ["全体分析", "⚔️ グループ比較"], horizontal=True)
+
+    # ターゲット列（テキスト）の結合
+    target_cols = text_candidates if text_candidates else df.columns
     
     if len(df_filtered) == 0:
-        st.error("条件に合うデータが0件です。フィルタ条件を緩めてください。")
-    else:
-        # Step 3では、対象となる全テキスト列を結合して表示
+        st.error("データが0件です。絞り込み条件を解除してください。")
+        
+    # === A. 全体分析モード ===
+    elif mode == "全体分析":
         full_text = ""
-        target_cols = text_candidates if text_candidates else df.columns
         for col in target_cols:
             full_text += " " + " ".join(df_filtered[col].dropna().astype(str).tolist())
-            
         tokens = get_tokens(full_text, stop_words)
 
         if not tokens:
             st.warning("表示できる単語がありません。")
         else:
-            tab1, tab2, tab3 = st.tabs(["☁️ ワードクラウド", "🕸️ 共起ネットワーク", "📈 ランキング"])
+            tab1, tab2, tab3 = st.tabs(["☁️ ワードクラウド", "🕸️ つながりマップ", "📈 ランキング"])
             
             with tab1:
-                st.subheader("ワードクラウド")
+                st.markdown("#### 全体の傾向 (直感的に見る)")
                 try:
                     wc = WordCloud(
-                        background_color="white", width=800, height=500,
+                        background_color="white", width=900, height=500,
                         regexp=r"[\w']+", font_path="IPAexGothic.ttf"
                     ).generate(" ".join(tokens))
                     fig, ax = plt.subplots(figsize=(10, 6))
@@ -254,14 +181,14 @@ elif st.session_state.step == 3:
                     st.error("フォント読込エラー")
 
             with tab2:
-                st.subheader("共起ネットワーク")
-                col1, col2 = st.columns(2)
-                with col1:
-                    net_top = st.slider("エッジ数", 10, 200, 50, key='net1')
-                with col2:
-                    min_edge = st.slider("最小共起回数", 1, 10, 2, key='net2')
+                st.markdown("#### 単語のつながり (共起ネットワーク)")
+                # 親切な説明 (V7の良さを継承)
+                st.info("💡 **見方のヒント**: 太い線でつながっている単語は、セットで使われている言葉です。")
                 
-                # 行ごとのリスト作成（全テキスト列を結合）
+                c1, c2 = st.columns(2)
+                net_top = c1.slider("表示単語数", 10, 150, 50)
+                min_edge = c2.slider("最小の線の太さ", 1, 10, 2)
+                
                 sentences = []
                 for i, row in df_filtered.iterrows():
                     row_text = " ".join([str(row[c]) for c in target_cols if pd.notna(row[c])])
@@ -279,12 +206,69 @@ elif st.session_state.step == 3:
                     ax.axis('off')
                     st.pyplot(fig)
                 else:
-                    st.warning("つながりが見つかりませんでした。")
+                    st.warning("つながりが見つかりません。")
 
             with tab3:
-                st.subheader("頻出単語ランキング")
+                st.markdown("#### 頻出語ランキング")
                 c = Counter(tokens)
-                common = c.most_common(20)
-                words, counts = zip(*common)
+                words, counts = zip(*c.most_common(20))
                 fig, ax = plt.subplots(figsize=(8, 6))
                 ax.barh(words, counts, color='skyblue')
+                ax.invert_yaxis()
+                st.pyplot(fig)
+
+    # === B. グループ比較モード ===
+    elif mode == "⚔️ グループ比較":
+        st.markdown("#### 2つのグループの違いを見比べる")
+        
+        # 比較の設定
+        if not filter_candidates:
+            st.error("比較できる属性列（クラスや性別など）が見つかりません。")
+        else:
+            col_comp_1, col_comp_2, col_comp_3 = st.columns(3)
+            target_attr = col_comp_1.selectbox("どの項目で分けますか？", filter_candidates)
+            
+            unique_vals = sorted(df_filtered[target_attr].dropna().unique().tolist())
+            if len(unique_vals) < 2:
+                st.warning("比較するためのデータが足りません（1種類しかありません）。")
+            else:
+                val_a = col_comp_2.selectbox("グループA (左)", unique_vals, index=0)
+                val_b = col_comp_3.selectbox("グループB (右)", unique_vals, index=min(1, len(unique_vals)-1))
+
+                # データ分割 & トークン化
+                df_a = df_filtered[df_filtered[target_attr] == val_a]
+                df_b = df_filtered[df_filtered[target_attr] == val_b]
+                
+                def get_text_tokens(d):
+                    txt = ""
+                    for c in target_cols:
+                        txt += " " + " ".join(d[c].dropna().astype(str).tolist())
+                    return get_tokens(txt, stop_words)
+
+                tokens_a = get_text_tokens(df_a)
+                tokens_b = get_text_tokens(df_b)
+
+                # 左右に並べて表示
+                c_left, c_right = st.columns(2)
+                
+                with c_left:
+                    st.info(f"🟦 {val_a} ({len(df_a)}件)")
+                    if tokens_a:
+                        wc_a = WordCloud(background_color="white", width=400, height=300, font_path="IPAexGothic.ttf").generate(" ".join(tokens_a))
+                        fig_a, ax_a = plt.subplots()
+                        ax_a.imshow(wc_a, interpolation='bilinear')
+                        ax_a.axis("off")
+                        st.pyplot(fig_a)
+                    else:
+                        st.write("データなし")
+
+                with c_right:
+                    st.success(f"🟧 {val_b} ({len(df_b)}件)")
+                    if tokens_b:
+                        wc_b = WordCloud(background_color="white", width=400, height=300, font_path="IPAexGothic.ttf").generate(" ".join(tokens_b))
+                        fig_b, ax_b = plt.subplots()
+                        ax_b.imshow(wc_b, interpolation='bilinear')
+                        ax_b.axis("off")
+                        st.pyplot(fig_b)
+                    else:
+                        st.write("データなし")
