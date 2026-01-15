@@ -11,7 +11,7 @@ import re
 import time
 
 # --- 1. アプリの設定 ---
-st.set_page_config(page_title="Text Analytics V10", layout="wide")
+st.set_page_config(page_title="Text Analytics V11", layout="wide")
 
 # セッションステート初期化
 if 'df' not in st.session_state:
@@ -80,6 +80,29 @@ def create_network(tokens_list, top_n, min_edge):
             G.add_edge(u, v, weight=weight)
     return G
 
+def display_kwic(df_target, target_cols, search_word):
+    """原文検索結果を表示するヘルパー関数"""
+    count = 0
+    # 検索語を太字にするための置換 (ケースインセンシティブにはしていません)
+    highlight_word = f"**{search_word}**"
+    
+    for i, row in df_target.iterrows():
+        # 複数のテキスト列を連結してチェック
+        row_text = " ".join([str(row[c]) for c in target_cols if pd.notna(row[c])])
+        
+        if search_word in row_text:
+            count += 1
+            # 該当箇所をハイライト
+            highlighted_text = row_text.replace(search_word, highlight_word)
+            st.markdown(f"・ {highlighted_text}")
+            
+            if count >= 20: # 表示制限
+                st.caption(f"※これ以上は省略します（他 {len(df_target)-count} 件の可能性あり）")
+                break
+    
+    if count == 0:
+        st.write("該当する文章は見つかりませんでした。")
+
 # --- 3. メイン処理 ---
 
 # === ファイル読み込みエリア ===
@@ -128,10 +151,9 @@ else:
             
     stop_words = DEFAULT_STOPWORDS + st.session_state.user_stopwords
 
-    # 2. 全体フィルタリング設定 (ベースとなる絞り込み)
+    # 2. 全体フィルタリング設定
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔍 全体の絞り込み")
-    st.sidebar.caption("※ここで絞り込んだデータの中から、さらにグループA/Bを選びます")
     
     df_filtered = df.copy()
     for col in filter_candidates:
@@ -166,7 +188,8 @@ else:
         if not tokens:
             st.warning("表示できる単語がありません。")
         else:
-            tab1, tab2, tab3 = st.tabs(["☁️ ワードクラウド", "🕸️ つながりマップ", "📈 ランキング"])
+            # タブ追加：原文検索
+            tab1, tab2, tab3, tab4 = st.tabs(["☁️ ワードクラウド", "🕸️ つながりマップ", "📈 ランキング", "🔎 原文検索"])
             
             with tab1:
                 try:
@@ -214,37 +237,40 @@ else:
                 ax.invert_yaxis()
                 st.pyplot(fig)
 
-    # === B. 自由比較モード (V10: マルチ条件対応) ===
+            with tab4:
+                st.markdown("#### 💬 実際の文章を確認する")
+                st.caption("分析結果で気になった単語を入力すると、その単語が含まれる文章を抜き出して表示します。")
+                search_word = st.text_input("検索したい単語", placeholder="例: 先生")
+                
+                if search_word:
+                    st.markdown(f"**「{search_word}」を含む回答一覧:**")
+                    st.markdown("---")
+                    display_kwic(df_filtered, target_cols, search_word)
+
+    # === B. 自由比較モード ===
     elif mode == "⚔️ 自由比較 (カスタム)":
         st.markdown("#### 条件を組み合わせてグループを作成")
-        st.caption("例：グループAに「1年」「男子」を設定し、グループBに「3年」「女子」を設定するなど")
         
         if not filter_candidates:
             st.error("比較できる属性列が見つかりません。")
         else:
-            # 2カラムで条件設定エリアを作る
             col_a_setup, col_b_setup = st.columns(2)
             
-            # --- グループAの作成 ---
             with col_a_setup:
                 st.info("🟦 **グループA の条件**")
                 df_a = df_filtered.copy()
-                with st.expander("条件を選択 (開く)", expanded=True):
+                with st.expander("条件を選択", expanded=True):
                     for col in filter_candidates:
-                        # 選択肢の取得
                         vals = sorted(df[col].dropna().unique().tolist())
-                        # ユニークキーのために key引数をつける
                         selected_a = st.multiselect(f"{col} (A)", vals, key=f"sel_a_{col}")
                         if selected_a:
                             df_a = df_a[df_a[col].isin(selected_a)]
                 st.write(f"**人数:** {len(df_a)} 人")
 
-            # --- グループBの作成 ---
             with col_b_setup:
                 st.error("🟥 **グループB の条件**")
                 df_b = df_filtered.copy()
-                # デフォルトでAと違う条件にするのは難しいので、最初は「全員」にしてユーザーに選ばせる
-                with st.expander("条件を選択 (開く)", expanded=True):
+                with st.expander("条件を選択", expanded=True):
                     for col in filter_candidates:
                         vals = sorted(df[col].dropna().unique().tolist())
                         selected_b = st.multiselect(f"{col} (B)", vals, key=f"sel_b_{col}")
@@ -253,9 +279,8 @@ else:
                 st.write(f"**人数:** {len(df_b)} 人")
 
             if len(df_a) == 0 or len(df_b) == 0:
-                st.warning("条件に該当するデータが0件です。条件を緩めてください。")
+                st.warning("条件に該当するデータが0件です。")
             else:
-                # 分析実行
                 def get_combined_tokens(d):
                     txt = ""
                     for c in target_cols:
@@ -265,8 +290,8 @@ else:
                 tokens_a = get_combined_tokens(df_a)
                 tokens_b = get_combined_tokens(df_b)
 
-                # タブ表示
-                comp_tab1, comp_tab2, comp_tab3 = st.tabs(["☁️ ワードクラウド", "🕸️ 違いのネットワーク", "🦋 対比ランキング"])
+                # タブ追加：原文検索
+                comp_tab1, comp_tab2, comp_tab3, comp_tab4 = st.tabs(["☁️ ワードクラウド", "🕸️ 違いのネットワーク", "🦋 対比ランキング", "🔎 原文検索"])
 
                 with comp_tab1:
                     c1, c2 = st.columns(2)
@@ -286,8 +311,7 @@ else:
                             st.pyplot(fig)
 
                 with comp_tab2:
-                    st.markdown("##### 🟦 青はAの特徴、🟥 赤はBの特徴、⬜ グレーは共通の話題")
-                    
+                    st.markdown("##### 🟦 青はAの特徴、🟥 赤はBの特徴、⬜ グレーは共通")
                     sentences_mixed = []
                     for i, row in df_a.iterrows():
                         sentences_mixed.append(" ".join([str(row[c]) for c in target_cols if pd.notna(row[c])]))
@@ -300,14 +324,12 @@ else:
                     if G.number_of_nodes() > 0:
                         count_a = Counter(tokens_a)
                         count_b = Counter(tokens_b)
-                        
                         node_colors = []
                         for node in G.nodes():
                             fa = count_a.get(node, 0)
                             fb = count_b.get(node, 0)
                             total = fa + fb + 0.1 
                             ratio = fa / total
-                            
                             if ratio > 0.6: node_colors.append('#66b3ff')
                             elif ratio < 0.4: node_colors.append('#ff9999')
                             else: node_colors.append('#dddddd')
@@ -320,20 +342,17 @@ else:
                         ax.axis('off')
                         st.pyplot(fig)
                     else:
-                        st.warning("共通データ不足で描画できません")
+                        st.warning("共通データ不足")
 
                 with comp_tab3:
                     st.markdown("##### 🦋 バタフライチャート")
                     ca = Counter(tokens_a)
                     cb = Counter(tokens_b)
                     all_top_words = list(set([w for w, c in ca.most_common(15)] + [w for w, c in cb.most_common(15)]))
-                    
                     data = []
                     for w in all_top_words:
                         data.append({'word': w, 'A': ca.get(w, 0), 'B': cb.get(w, 0)})
-                    
                     df_comp = pd.DataFrame(data).sort_values('A', ascending=True)
-                    
                     if not df_comp.empty:
                         fig, ax = plt.subplots(figsize=(10, 8))
                         ax.barh(df_comp['word'], -df_comp['A'], color='#66b3ff', label="グループA")
@@ -343,3 +362,16 @@ else:
                         ax.set_xticklabels([str(abs(int(x))) for x in xticks])
                         ax.legend()
                         st.pyplot(fig)
+
+                with comp_tab4:
+                    st.markdown("#### 💬 文脈の違いを確認する")
+                    search_word = st.text_input("検索したい単語 (比較用)", placeholder="例: 授業")
+                    
+                    if search_word:
+                        col_res_a, col_res_b = st.columns(2)
+                        with col_res_a:
+                            st.info(f"🟦 グループAの「{search_word}」")
+                            display_kwic(df_a, target_cols, search_word)
+                        with col_res_b:
+                            st.error(f"🟥 グループBの「{search_word}」")
+                            display_kwic(df_b, target_cols, search_word)
