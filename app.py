@@ -9,7 +9,9 @@ import networkx as nx
 import itertools
 import re
 import time
-
+import streamlit.components.v1 as components
+from pyvis.network import Network
+import community.community_louvain as community_louvain
 # --- 1. アプリの設定 ---
 st.set_page_config(page_title="Text Analytics V13", layout="wide")
 
@@ -31,7 +33,51 @@ DEFAULT_STOPWORDS = [
 ]
 
 # --- 2. 関数定義 ---
+def create_network_interactive(tokens_list, top_n, min_edge):
+    """Pyvis用: ノードサイズと線の太さを可変にしたネットワーク生成"""
+    
+    # 1. 全単語の出現数をカウント（ノードサイズ用）
+    all_words = []
+    for tokens in tokens_list:
+        all_words.extend(tokens)
+    word_counts = Counter(all_words)
 
+    # 2. 共起ペアのカウント（線の太さ用）
+    pair_list = []
+    for tokens in tokens_list:
+        if len(tokens) >= 2:
+            # 並び順を固定してペアを作成（A-B と B-A を同一視するため）
+            pair_list.extend(itertools.combinations(sorted(tokens), 2))
+            
+    c = Counter(pair_list)
+    top_pairs = c.most_common(top_n)
+    
+    G = nx.Graph()
+    
+    # エッジとノードを追加
+    for (u, v), weight in top_pairs:
+        if weight >= min_edge:
+            # value を設定すると、Pyvisが自動で太さを調整します
+            G.add_edge(u, v, value=weight, title=f"共起回数: {weight}回")
+            
+            # ノードがまだ追加されていなければ追加（サイズ設定）
+            if u not in G.nodes:
+                freq = word_counts[u]
+                # サイズ倍率は適宜調整 (*2 など)
+                G.add_node(u, size=freq * 1.5, title=f"{u}: {freq}回出現", group=1) 
+            if v not in G.nodes:
+                freq = word_counts[v]
+                G.add_node(v, size=freq * 1.5, title=f"{v}: {freq}回出現", group=1)
+
+    # コミュニティ検出（グループ分けして色付け）
+    try:
+        partition = community_louvain.best_partition(G)
+        for node, group_id in partition.items():
+            G.nodes[node]['group'] = group_id
+    except:
+        pass # ライブラリがない場合は色分けなしで続行
+
+    return G
 def classify_columns(df):
     """属性(フィルタ用)とテキスト(分析用)を自動判定"""
     filter_cols = [] 
@@ -216,30 +262,55 @@ else:
                     st.error("フォント読込エラー")
 
             with tab2:
-                st.info("💡 **ヒント**: 同じ文脈でよく使われる単語同士が線で結ばれています。")
+                st.markdown("#### 🕸️ つながりマップ (Interactive)")
+                st.info("💡 **操作方法**: 丸をドラッグして動かせます。マウスホイールでズーム、背景ドラッグで移動できます。")
+        
                 c1, c2 = st.columns(2)
-                net_top = c1.slider("表示単語数", 10, 150, 60)
-                min_edge = c2.slider("最小の線の太さ", 1, 10, 2)
-                
+        # 動作を軽くするため初期値を少し下げておきます
+                net_top = c1.slider("表示する単語ペア数 (Top N)", 10, 200, 60, key="net_top_interactive")
+                min_edge = c2.slider("最小の線の太さ (共起回数)", 1, 10, 2, key="min_edge_interactive")
+
+        # 文章リストの作成
                 sentences = []
                 for i, row in df_filtered.iterrows():
+            # 選択された列のテキストを結合
                     row_text = " ".join([str(row[c]) for c in target_cols if pd.notna(row[c])])
                     sentences.append(row_text)
 
-                tokens_list = [get_tokens(s, stop_words) for s in sentences]
-                G = create_network(tokens_list, net_top, min_edge)
-                
-                if G.number_of_nodes() > 0:
-                    fig, ax = plt.subplots(figsize=(8, 8))
-                    pos = nx.spring_layout(G, k=0.8, seed=42)
-                    nx.draw_networkx_nodes(G, pos, node_size=400, node_color='#66b3ff', alpha=0.9, ax=ax)
-                    nx.draw_networkx_edges(G, pos, width=1.0, alpha=0.5, edge_color='gray', ax=ax)
-                    nx.draw_networkx_labels(G, pos, font_family='IPAexGothic', font_size=10, ax=ax)
-                    ax.axis('off')
-                    st.pyplot(fig)
-                else:
-                    st.warning("つながりが見つかりません。")
+        # 形態素解析
+                    tokens_list = [get_tokens(s, stop_words) for s in sentences]
+        
+        # ネットワーク作成
+                    G = create_network_interactive(tokens_list, net_top, min_edge)
 
+                    if G.number_of_nodes() > 0:
+            # Pyvisの設定
+                        try:
+                # 画面の幅いっぱいに表示
+                        net = Network(height="600px", width="100%", bgcolor="#ffffff", font_color="black")
+                        net.from_nx(G)
+                
+                # 物理演算のプリセット（反発力を強めにして重なりを防ぐ）
+                        net.force_atlas_2based(gravity=-50) 
+                
+                # HTMLとして保存して読み込み（Streamlit Cloud対応）
+                        import os
+                        path = "/tmp" if os.path.exists("/tmp") else "."
+                        file_path = f"{path}/pyvis_graph.html"
+                
+                        net.save_graph(file_path)
+                
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            source_code = f.read()
+                
+                # Streamlit上に表示
+                        components.html(source_code, height=610)
+                
+                    except Exception as e:
+                        st.error(f"ネットワーク図の描画中にエラーが発生しました: {e}")
+                else:
+                    st.warning("条件に一致するつながりが見つかりませんでした。スライダーを調整してください。")
+            
             with tab3:
                 c = Counter(tokens)
                 words, counts = zip(*c.most_common(20))
