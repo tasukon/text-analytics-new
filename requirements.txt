@@ -6,3 +6,5 @@ janome
 wordcloud
 networkx
 openpyxl
+pyvis
+python-louvain
